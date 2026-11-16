@@ -8,8 +8,34 @@
   --link: var(--tg-theme-link-color, #60a5fa);
   --border: rgba(148, 163, 184, 0.18);
   --success: #16a34a;
+  --success-text: #4ade80;
   --danger: #dc2626;
+  --danger-text: #f87171;
   --radius: 14px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-color-scheme="dark"]) {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --surface: var(--tg-theme-secondary-bg-color, #f1f5f9);
+    --text: var(--tg-theme-text-color, #0f172a);
+    --hint: var(--tg-theme-hint-color, #475569);
+    --link: var(--tg-theme-link-color, #2563eb);
+    --border: rgba(15, 23, 42, 0.14);
+    --success-text: #15803d;
+    --danger-text: #b91c1c;
+  }
+}
+
+:root[data-color-scheme="light"] {
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --surface: var(--tg-theme-secondary-bg-color, #f1f5f9);
+  --text: var(--tg-theme-text-color, #0f172a);
+  --hint: var(--tg-theme-hint-color, #475569);
+  --link: var(--tg-theme-link-color, #2563eb);
+  --border: rgba(15, 23, 42, 0.14);
+  --success-text: #15803d;
+  --danger-text: #b91c1c;
 }
 
 * {
@@ -95,7 +121,7 @@ h2 {
 
 .badge-ok {
   border-color: rgba(22, 163, 74, 0.45);
-  color: #4ade80;
+  color: var(--success-text);
 }
 
 .badge-muted {
@@ -204,14 +230,14 @@ textarea {
 
 .btn-approve {
   background: rgba(22, 163, 74, 0.16);
-  color: #4ade80;
+  color: var(--success-text);
   border-color: rgba(22, 163, 74, 0.45);
   flex: 1;
 }
 
 .btn-deny {
   background: rgba(220, 38, 38, 0.16);
-  color: #f87171;
+  color: var(--danger-text);
   border-color: rgba(220, 38, 38, 0.45);
   flex: 1;
 }

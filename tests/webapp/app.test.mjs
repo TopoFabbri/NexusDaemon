@@ -27,8 +27,11 @@ test("buildProjectPrompt handles empty and normal inputs", () => {
   assert.equal(app.buildProjectPrompt(null), "");
 });
 
-test("formatUserDisplay formats Telegram user safely and falls back", () => {
+test("formatUserDisplay formats Telegram user, keyboard mode, session, and browser fallback", () => {
   assert.equal(app.formatUserDisplay(null), "Browser preview");
+  assert.equal(app.formatUserDisplay({ platform: "unknown", initData: "" }), "Browser preview");
+  assert.equal(app.formatUserDisplay({ platform: "android", initData: "", sendData() {} }), "Keyboard WebApp (sendData active)");
+  assert.equal(app.formatUserDisplay({ platform: "tdesktop", initData: "query_id=1" }), "Telegram session");
   assert.equal(
     app.formatUserDisplay({ initDataUnsafe: { user: { first_name: "Topo", username: "topofabbri" } } }),
     "Topo (@topofabbri)"
@@ -39,10 +42,14 @@ test("formatUserDisplay formats Telegram user safely and falls back", () => {
   );
 });
 
-test("applyTelegramTheme sets only valid hex colors", () => {
+test("applyTelegramTheme sets colorScheme and only valid hex colors", () => {
   const props = new Map();
+  const attrs = new Map();
   const fakeDoc = {
     documentElement: {
+      setAttribute(k, v) {
+        attrs.set(k, v);
+      },
       style: {
         setProperty(k, v) {
           props.set(k, v);
@@ -52,6 +59,7 @@ test("applyTelegramTheme sets only valid hex colors", () => {
   };
   app.applyTelegramTheme(
     {
+      colorScheme: "light",
       themeParams: {
         bg_color: "#112233",
         text_color: "not-a-color; background: url(evil)",
@@ -61,38 +69,56 @@ test("applyTelegramTheme sets only valid hex colors", () => {
     fakeDoc
   );
 
+  assert.equal(attrs.get("data-color-scheme"), "light");
   assert.equal(props.get("--tg-theme-bg-color"), "#112233");
   assert.equal(props.get("--tg-theme-button-color"), "#3b82f6");
   assert.equal(props.has("--tg-theme-text-color"), false);
 });
 
-test("dispatchCommand uses Telegram.WebApp.sendData when available and falls back cleanly", async () => {
+test("dispatchCommand respects Telegram Keyboard vs Menu Button sendData rules and byte limit", async () => {
   const emptyRes = await app.dispatchCommand("   ", {});
   assert.equal(emptyRes.ok, false);
   assert.equal(emptyRes.mode, "empty");
 
+  // Browser preview: platform=unknown, initData="" -> never calls sendData
+  assert.equal(app.canUseSendData({ platform: "unknown", initData: "", sendData() {} }), false);
+
+  // Keyboard Button launch: platform !== "unknown" and initData === "" -> sendData is allowed
   const sentPayloads = [];
-  const tg = {
-    initData: "query_id=123",
+  const keyboardTg = {
+    platform: "android",
+    initData: "",
     sendData(data) {
       sentPayloads.push(JSON.parse(data));
     },
     HapticFeedback: { notificationOccurred() {} }
   };
-  const tgRes = await app.dispatchCommand("/status", { tg, source: "quick_button" });
+  assert.equal(app.canUseSendData(keyboardTg), true);
+  const tgRes = await app.dispatchCommand("/status", { tg: keyboardTg, source: "quick_button" });
   assert.equal(tgRes.ok, true);
   assert.equal(tgRes.mode, "telegram-sendData");
   assert.equal(sentPayloads.length, 1);
   assert.equal(sentPayloads[0].command, "/status");
   assert.equal(sentPayloads[0].source, "quick_button");
 
+  // Payload > 4096 UTF-8 bytes in Keyboard Button mode is rejected before calling sendData
+  const oversizedRes = await app.dispatchCommand("a".repeat(4050), { tg: keyboardTg, source: "prompt_composer" });
+  assert.equal(oversizedRes.ok, false);
+  assert.equal(oversizedRes.mode, "too-large");
+  assert.equal(sentPayloads.length, 1);
+
+  // Menu Button / Inline launch: initData is non-empty -> sendData is silently dropped by Telegram,
+  // so app must NOT call sendData and must fall back to clipboard.
+  let menuSendDataCalled = false;
   const copied = [];
   const menuModeTg = {
+    platform: "tdesktop",
     initData: "query_id=123",
     sendData() {
-      throw new Error("WebAppMethodUnsupported");
+      menuSendDataCalled = true;
     }
   };
+  assert.equal(app.canUseSendData(menuModeTg), false);
   const fallbackRes = await app.dispatchCommand("/models", {
     tg: menuModeTg,
     clipboard: {
@@ -101,9 +127,120 @@ test("dispatchCommand uses Telegram.WebApp.sendData when available and falls bac
       }
     }
   });
+  assert.equal(menuSendDataCalled, false);
   assert.equal(fallbackRes.ok, true);
   assert.equal(fallbackRes.mode, "clipboard");
   assert.deepEqual(copied, ["/models"]);
+});
+
+test("initBrowserApp wires DOM elements and handles project pills, model switcher, and quick commands", async () => {
+  function makeElement(tag, id) {
+    const el = {
+      tagName: tag.toUpperCase(),
+      id: id || "",
+      value: "",
+      textContent: "",
+      className: "",
+      style: {},
+      attributes: new Map(),
+      listeners: new Map(),
+      children: [],
+      get lastElementChild() {
+        return this.children[this.children.length - 1] || null;
+      },
+      setAttribute(k, v) {
+        this.attributes.set(k, String(v));
+      },
+      getAttribute(k) {
+        return this.attributes.has(k) ? this.attributes.get(k) : null;
+      },
+      addEventListener(evt, fn) {
+        if (!this.listeners.has(evt)) this.listeners.set(evt, []);
+        this.listeners.get(evt).push(fn);
+      },
+      async trigger(evt) {
+        const list = this.listeners.get(evt) || [];
+        for (const fn of list) {
+          await fn({ target: this });
+        }
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      prepend(child) {
+        this.children.unshift(child);
+      },
+      removeChild(child) {
+        this.children = this.children.filter((c) => c !== child);
+      },
+      replaceChildren() {
+        this.children = [];
+      },
+      querySelector(sel) {
+        if (sel === ".log-empty") {
+          return this.children.find((c) => c.className === "log-empty") || null;
+        }
+        return null;
+      },
+      remove() {},
+      focus() {}
+    };
+    return el;
+  }
+
+  const elements = {
+    "env-badge": makeElement("div", "env-badge"),
+    "user-label": makeElement("span", "user-label"),
+    "prompt-input": makeElement("textarea", "prompt-input"),
+    "send-prompt-btn": makeElement("button", "send-prompt-btn"),
+    "copy-prompt-btn": makeElement("button", "copy-prompt-btn"),
+    "clear-input-btn": makeElement("button", "clear-input-btn"),
+    "model-target": makeElement("select", "model-target"),
+    "model-preset": makeElement("select", "model-preset"),
+    "model-custom": makeElement("input", "model-custom"),
+    "apply-model-btn": makeElement("button", "apply-model-btn"),
+    "model-preview": makeElement("code", "model-preview"),
+    "project-pills": makeElement("div", "project-pills"),
+    "status-banner": makeElement("span", "status-banner"),
+    "activity-log": makeElement("ul", "activity-log")
+  };
+  elements["model-target"].value = "/model";
+
+  const quickBtn = makeElement("button");
+  quickBtn.setAttribute("data-command", "/status");
+
+  const origDoc = globalThis.document;
+  globalThis.document = {
+    documentElement: makeElement("html"),
+    getElementById(id) {
+      return elements[id] || null;
+    },
+    createElement(tag) {
+      return makeElement(tag);
+    },
+    querySelectorAll(sel) {
+      return sel === "[data-command]" ? [quickBtn] : [];
+    }
+  };
+
+  try {
+    app.initBrowserApp();
+    elements["model-preset"].value = "hydrogen-4";
+    assert.equal(elements["env-badge"].textContent, "Browser Preview");
+    assert.equal(elements["model-preset"].children.length, app.KNOWN_MODELS.length);
+    assert.equal(elements["project-pills"].children.length, app.REGISTERED_PROJECTS.length);
+
+    // Click a project pill -> populates prompt input
+    await elements["project-pills"].children[2].trigger("click");
+    assert.equal(elements["prompt-input"].value, "Check status for project NexusDaemon");
+
+    // Click quick command when clipboard unavailable -> falls back to preview & updates log
+    await quickBtn.trigger("click");
+    assert.equal(elements["activity-log"].children[0].children[0].textContent, "/status");
+    assert.equal(elements["prompt-input"].value, "/status");
+  } finally {
+    globalThis.document = origDoc;
+  }
 });
 
 test("webapp static files exist and reference valid relative assets", () => {

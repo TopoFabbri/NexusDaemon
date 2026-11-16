@@ -57,21 +57,36 @@
 
   function formatUserDisplay(tg) {
     var user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
-    if (!user) {
-      return "Browser preview";
+    if (user) {
+      var parts = [];
+      if (user.first_name) {
+        parts.push(String(user.first_name));
+      }
+      if (user.username) {
+        parts.push("(@" + String(user.username) + ")");
+      }
+      return parts.length > 0 ? parts.join(" ") : "Telegram user #" + String(user.id || "unknown");
     }
-    var parts = [];
-    if (user.first_name) {
-      parts.push(String(user.first_name));
+    if (canUseSendData(tg)) {
+      return "Keyboard WebApp (sendData active)";
     }
-    if (user.username) {
-      parts.push("(@" + String(user.username) + ")");
+    if (isTelegramRuntime(tg)) {
+      return "Telegram session";
     }
-    return parts.length > 0 ? parts.join(" ") : "Telegram user #" + String(user.id || "unknown");
+    return "Browser preview";
   }
 
   function applyTelegramTheme(tg, doc) {
-    if (!tg || !tg.themeParams || !doc || !doc.documentElement) {
+    if (!tg || !doc || !doc.documentElement) {
+      return;
+    }
+    if (
+      (tg.colorScheme === "light" || tg.colorScheme === "dark") &&
+      typeof doc.documentElement.setAttribute === "function"
+    ) {
+      doc.documentElement.setAttribute("data-color-scheme", tg.colorScheme);
+    }
+    if (!tg.themeParams || !doc.documentElement.style) {
       return;
     }
     var rootStyle = doc.documentElement.style;
@@ -93,6 +108,13 @@
     });
   }
 
+  function getUtf8ByteLength(text) {
+    if (typeof TextEncoder !== "undefined") {
+      return new TextEncoder().encode(text).length;
+    }
+    return unescape(encodeURIComponent(text)).length;
+  }
+
   function createWebAppPayload(commandText, source) {
     return JSON.stringify({
       type: "nexus_command",
@@ -102,8 +124,56 @@
     });
   }
 
+  function isTelegramRuntime(tg) {
+    return Boolean(
+      tg &&
+      ((typeof tg.initData === "string" && tg.initData.length > 0) ||
+        (typeof tg.platform === "string" && tg.platform.length > 0 && tg.platform !== "unknown"))
+    );
+  }
+
   function canUseSendData(tg) {
-    return Boolean(tg && typeof tg.sendData === "function" && tg.initData && tg.initData.length > 0);
+    // Telegram only delivers WebApp.sendData for Reply Keyboard web_app buttons,
+    // where platform !== "unknown" and initData is empty. Menu/inline launches set initData and drop sendData.
+    return Boolean(
+      tg &&
+      typeof tg.sendData === "function" &&
+      typeof tg.platform === "string" &&
+      tg.platform.length > 0 &&
+      tg.platform !== "unknown" &&
+      (!tg.initData || tg.initData.length === 0)
+    );
+  }
+
+  async function copyWithFallback(text, clipboard, doc) {
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(text);
+        return true;
+      } catch (err) {
+        // Fall through to execCommand fallback if available.
+      }
+    }
+
+    if (doc && typeof doc.createElement === "function" && doc.body && typeof doc.execCommand === "function") {
+      var temp = doc.createElement("textarea");
+      temp.value = text;
+      temp.setAttribute("readonly", "");
+      temp.style.position = "fixed";
+      temp.style.opacity = "0";
+      temp.style.pointerEvents = "none";
+      doc.body.appendChild(temp);
+      temp.select();
+      try {
+        return Boolean(doc.execCommand("copy"));
+      } catch (err) {
+        return false;
+      } finally {
+        doc.body.removeChild(temp);
+      }
+    }
+
+    return false;
   }
 
   async function dispatchCommand(commandText, options) {
@@ -114,10 +184,19 @@
 
     var tg = options && options.tg;
     var clipboard = options && options.clipboard;
+    var doc = options && options.doc;
 
     if (canUseSendData(tg)) {
+      var payload = createWebAppPayload(trimmed, options && options.source);
+      if (getUtf8ByteLength(payload) > 4096) {
+        return {
+          ok: false,
+          mode: "too-large",
+          message: "Command exceeds Telegram's 4096-byte sendData limit. Shorten it or use Copy."
+        };
+      }
       try {
-        tg.sendData(createWebAppPayload(trimmed, options && options.source));
+        tg.sendData(payload);
         if (tg.HapticFeedback && typeof tg.HapticFeedback.notificationOccurred === "function") {
           tg.HapticFeedback.notificationOccurred("success");
         }
@@ -128,34 +207,29 @@
           message: "Sent via Telegram WebApp.sendData"
         };
       } catch (err) {
-        // Menu button or inline button launches do not permit sendData; fall back to clipboard.
+        // Fall back to clipboard if WebView rejects sendData.
       }
     }
 
-    if (clipboard && typeof clipboard.writeText === "function") {
-      try {
-        await clipboard.writeText(trimmed);
-        return {
-          ok: true,
-          mode: "clipboard",
-          command: trimmed,
-          message: "Copied command to clipboard (sendData unavailable in this launch mode)"
-        };
-      } catch (err) {
-        return {
-          ok: true,
-          mode: "preview",
-          command: trimmed,
-          message: "Prepared command locally (clipboard permission unavailable)"
-        };
-      }
+    var copied = await copyWithFallback(trimmed, clipboard, doc);
+    if (copied) {
+      return {
+        ok: true,
+        mode: "clipboard",
+        command: trimmed,
+        message: isTelegramRuntime(tg)
+          ? "Copied command to clipboard (Menu/Inline mode — paste in chat)"
+          : "Copied command to clipboard"
+      };
     }
 
     return {
       ok: true,
       mode: "preview",
       command: trimmed,
-      message: "Prepared command in preview mode"
+      message: isTelegramRuntime(tg)
+        ? "Prepared command (clipboard blocked — copy from input)"
+        : "Prepared command in preview mode"
     };
   }
 
@@ -180,6 +254,7 @@
     var statusBanner = document.getElementById("status-banner");
     var activityLog = document.getElementById("activity-log");
 
+    modelPreset.replaceChildren();
     KNOWN_MODELS.forEach(function (modelId) {
       var option = document.createElement("option");
       option.value = modelId;
@@ -187,6 +262,7 @@
       modelPreset.appendChild(option);
     });
 
+    projectPills.replaceChildren();
     REGISTERED_PROJECTS.forEach(function (projectName) {
       var btn = document.createElement("button");
       btn.type = "button";
@@ -240,10 +316,15 @@
       var res = await dispatchCommand(commandText, {
         tg: tg,
         clipboard: root.navigator && root.navigator.clipboard,
+        doc: document,
         source: source
       });
       setStatus(res.message);
       if (res.ok && res.command) {
+        if (res.mode === "preview" && source !== "prompt_composer") {
+          promptInput.value = res.command;
+          syncMainButton();
+        }
         appendLog(res.command, res.mode);
       }
     }
@@ -260,7 +341,7 @@
       }
     }
 
-    if (tg && (tg.initData || (tg.platform && tg.platform !== "unknown"))) {
+    if (isTelegramRuntime(tg)) {
       try {
         tg.ready();
         tg.expand();
@@ -299,16 +380,16 @@
         setStatus("Nothing to copy.");
         return;
       }
-      if (root.navigator && root.navigator.clipboard) {
-        try {
-          await root.navigator.clipboard.writeText(text);
-          setStatus("Copied text to clipboard.");
-          appendLog(text, "copied");
-        } catch (err) {
-          setStatus("Clipboard write blocked by browser.");
-        }
+      var copied = await copyWithFallback(
+        text,
+        root.navigator && root.navigator.clipboard,
+        document
+      );
+      if (copied) {
+        setStatus("Copied text to clipboard.");
+        appendLog(text, "copied");
       } else {
-        setStatus("Clipboard API unavailable.");
+        setStatus("Clipboard copy unavailable — select and copy from the text box.");
       }
     });
 
@@ -350,7 +431,9 @@
     buildProjectPrompt: buildProjectPrompt,
     formatUserDisplay: formatUserDisplay,
     applyTelegramTheme: applyTelegramTheme,
+    getUtf8ByteLength: getUtf8ByteLength,
     createWebAppPayload: createWebAppPayload,
+    isTelegramRuntime: isTelegramRuntime,
     canUseSendData: canUseSendData,
     dispatchCommand: dispatchCommand,
     initBrowserApp: initBrowserApp
