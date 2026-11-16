@@ -1,0 +1,29 @@
+# Build artifacts
+bin/
+obj/
+out/
+TestResults/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Sensitive configuration and environment files
+appsettings.json
+**/appsettings.json
+appsettings.*.local.json
+.env
+.env.*
+*.pfx
+*.key
+
+# IDE and OS files
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Node / Web tooling (if used locally)
+node_modules/
+npm-debug.log*

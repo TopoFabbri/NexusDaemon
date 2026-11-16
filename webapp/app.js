@@ -1,0 +1,371 @@
+(function (root) {
+  "use strict";
+
+  var KNOWN_MODELS = [
+    "hydrogen-4",
+    "gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-xhigh",
+    "gemini-4-hydrogen-medium",
+    "gemini-4-hydrogen-low",
+    "gemini-4-argon-high",
+    "gemini-3.8-flash-high",
+    "claude-opus-5-5-high",
+    "claude-sonnet-5-5-high",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemma-4"
+  ];
+
+  var REGISTERED_PROJECTS = [
+    "HordePunkMaidens",
+    "Quantum-Quartz",
+    "NexusDaemon"
+  ];
+
+  var ALLOWED_MODEL_TARGETS = new Set([
+    "/model",
+    "/router-model",
+    "/worker-model"
+  ]);
+
+  function normalizeModelInput(raw) {
+    if (typeof raw !== "string") {
+      return "";
+    }
+    return raw.trim().replace(/\s+/g, " ");
+  }
+
+  function buildModelCommand(target, presetModel, customModel) {
+    var safeTarget = ALLOWED_MODEL_TARGETS.has(target) ? target : "/model";
+    var custom = normalizeModelInput(customModel);
+    var preset = normalizeModelInput(presetModel);
+    var chosen = custom || preset;
+    if (!chosen) {
+      return null;
+    }
+    return safeTarget + " " + chosen;
+  }
+
+  function buildProjectPrompt(projectName) {
+    var clean = normalizeModelInput(projectName);
+    if (!clean) {
+      return "";
+    }
+    return "Check status for project " + clean;
+  }
+
+  function formatUserDisplay(tg) {
+    var user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (!user) {
+      return "Browser preview";
+    }
+    var parts = [];
+    if (user.first_name) {
+      parts.push(String(user.first_name));
+    }
+    if (user.username) {
+      parts.push("(@" + String(user.username) + ")");
+    }
+    return parts.length > 0 ? parts.join(" ") : "Telegram user #" + String(user.id || "unknown");
+  }
+
+  function applyTelegramTheme(tg, doc) {
+    if (!tg || !tg.themeParams || !doc || !doc.documentElement) {
+      return;
+    }
+    var rootStyle = doc.documentElement.style;
+    var map = {
+      bg_color: "--tg-theme-bg-color",
+      secondary_bg_color: "--tg-theme-secondary-bg-color",
+      text_color: "--tg-theme-text-color",
+      hint_color: "--tg-theme-hint-color",
+      link_color: "--tg-theme-link-color",
+      button_color: "--tg-theme-button-color",
+      button_text_color: "--tg-theme-button-text-color"
+    };
+
+    Object.keys(map).forEach(function (key) {
+      var val = tg.themeParams[key];
+      if (typeof val === "string" && /^#[0-9a-fA-F]{3,8}$/.test(val.trim())) {
+        rootStyle.setProperty(map[key], val.trim());
+      }
+    });
+  }
+
+  function createWebAppPayload(commandText, source) {
+    return JSON.stringify({
+      type: "nexus_command",
+      command: commandText,
+      source: source || "webapp",
+      sentAtUtc: new Date().toISOString()
+    });
+  }
+
+  function canUseSendData(tg) {
+    return Boolean(tg && typeof tg.sendData === "function" && tg.initData && tg.initData.length > 0);
+  }
+
+  async function dispatchCommand(commandText, options) {
+    var trimmed = typeof commandText === "string" ? commandText.trim() : "";
+    if (!trimmed) {
+      return { ok: false, mode: "empty", message: "Enter a command or prompt first." };
+    }
+
+    var tg = options && options.tg;
+    var clipboard = options && options.clipboard;
+
+    if (canUseSendData(tg)) {
+      try {
+        tg.sendData(createWebAppPayload(trimmed, options && options.source));
+        if (tg.HapticFeedback && typeof tg.HapticFeedback.notificationOccurred === "function") {
+          tg.HapticFeedback.notificationOccurred("success");
+        }
+        return {
+          ok: true,
+          mode: "telegram-sendData",
+          command: trimmed,
+          message: "Sent via Telegram WebApp.sendData"
+        };
+      } catch (err) {
+        // Menu button or inline button launches do not permit sendData; fall back to clipboard.
+      }
+    }
+
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(trimmed);
+        return {
+          ok: true,
+          mode: "clipboard",
+          command: trimmed,
+          message: "Copied command to clipboard (sendData unavailable in this launch mode)"
+        };
+      } catch (err) {
+        return {
+          ok: true,
+          mode: "preview",
+          command: trimmed,
+          message: "Prepared command locally (clipboard permission unavailable)"
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      mode: "preview",
+      command: trimmed,
+      message: "Prepared command in preview mode"
+    };
+  }
+
+  function initBrowserApp() {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    var tg = root.Telegram && root.Telegram.WebApp ? root.Telegram.WebApp : null;
+    var envBadge = document.getElementById("env-badge");
+    var userLabel = document.getElementById("user-label");
+    var promptInput = document.getElementById("prompt-input");
+    var sendPromptBtn = document.getElementById("send-prompt-btn");
+    var copyPromptBtn = document.getElementById("copy-prompt-btn");
+    var clearInputBtn = document.getElementById("clear-input-btn");
+    var modelTarget = document.getElementById("model-target");
+    var modelPreset = document.getElementById("model-preset");
+    var modelCustom = document.getElementById("model-custom");
+    var applyModelBtn = document.getElementById("apply-model-btn");
+    var modelPreview = document.getElementById("model-preview");
+    var projectPills = document.getElementById("project-pills");
+    var statusBanner = document.getElementById("status-banner");
+    var activityLog = document.getElementById("activity-log");
+
+    KNOWN_MODELS.forEach(function (modelId) {
+      var option = document.createElement("option");
+      option.value = modelId;
+      option.textContent = modelId;
+      modelPreset.appendChild(option);
+    });
+
+    REGISTERED_PROJECTS.forEach(function (projectName) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pill";
+      btn.textContent = projectName;
+      btn.addEventListener("click", function () {
+        promptInput.value = buildProjectPrompt(projectName);
+        syncMainButton();
+        promptInput.focus();
+      });
+      projectPills.appendChild(btn);
+    });
+
+    function updateModelPreview() {
+      var cmd = buildModelCommand(modelTarget.value, modelPreset.value, modelCustom.value);
+      modelPreview.textContent = cmd || "Enter a model ID";
+    }
+
+    function appendLog(commandText, metaText) {
+      var emptyRow = activityLog.querySelector(".log-empty");
+      if (emptyRow) {
+        emptyRow.remove();
+      }
+      var li = document.createElement("li");
+      var cmdSpan = document.createElement("span");
+      cmdSpan.textContent = commandText;
+      var metaSpan = document.createElement("span");
+      metaSpan.className = "log-meta";
+      metaSpan.textContent = metaText;
+      li.appendChild(cmdSpan);
+      li.appendChild(metaSpan);
+      activityLog.prepend(li);
+
+      while (activityLog.children.length > 8) {
+        activityLog.removeChild(activityLog.lastElementChild);
+      }
+    }
+
+    function setStatus(msg) {
+      statusBanner.textContent = msg;
+    }
+
+    function triggerHaptic() {
+      if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.impactOccurred === "function") {
+        tg.HapticFeedback.impactOccurred("light");
+      }
+    }
+
+    async function handleDispatch(commandText, source) {
+      triggerHaptic();
+      var res = await dispatchCommand(commandText, {
+        tg: tg,
+        clipboard: root.navigator && root.navigator.clipboard,
+        source: source
+      });
+      setStatus(res.message);
+      if (res.ok && res.command) {
+        appendLog(res.command, res.mode);
+      }
+    }
+
+    function syncMainButton() {
+      if (!tg || !tg.MainButton) {
+        return;
+      }
+      if (canUseSendData(tg) && promptInput.value.trim().length > 0) {
+        tg.MainButton.setText("Send to Nexus");
+        tg.MainButton.show();
+      } else {
+        tg.MainButton.hide();
+      }
+    }
+
+    if (tg && (tg.initData || (tg.platform && tg.platform !== "unknown"))) {
+      try {
+        tg.ready();
+        tg.expand();
+      } catch (err) {
+        // Ignore SDK lifecycle errors outside real Telegram WebView.
+      }
+      applyTelegramTheme(tg, document);
+      if (typeof tg.onEvent === "function") {
+        tg.onEvent("themeChanged", function () {
+          applyTelegramTheme(tg, document);
+        });
+      }
+      if (tg.MainButton && typeof tg.MainButton.onClick === "function") {
+        tg.MainButton.onClick(function () {
+          handleDispatch(promptInput.value, "main_button");
+        });
+      }
+      envBadge.textContent = "Telegram · " + String(tg.platform || "mini-app");
+      envBadge.className = "badge badge-ok";
+      userLabel.textContent = formatUserDisplay(tg);
+    } else {
+      envBadge.textContent = "Browser Preview";
+      envBadge.className = "badge badge-muted";
+      userLabel.textContent = "Standalone mode";
+    }
+
+    promptInput.addEventListener("input", syncMainButton);
+
+    sendPromptBtn.addEventListener("click", function () {
+      handleDispatch(promptInput.value, "prompt_composer");
+    });
+
+    copyPromptBtn.addEventListener("click", async function () {
+      var text = promptInput.value.trim();
+      if (!text) {
+        setStatus("Nothing to copy.");
+        return;
+      }
+      if (root.navigator && root.navigator.clipboard) {
+        try {
+          await root.navigator.clipboard.writeText(text);
+          setStatus("Copied text to clipboard.");
+          appendLog(text, "copied");
+        } catch (err) {
+          setStatus("Clipboard write blocked by browser.");
+        }
+      } else {
+        setStatus("Clipboard API unavailable.");
+      }
+    });
+
+    clearInputBtn.addEventListener("click", function () {
+      promptInput.value = "";
+      syncMainButton();
+      setStatus("Cleared prompt input.");
+    });
+
+    document.querySelectorAll("[data-command]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var cmd = button.getAttribute("data-command") || "";
+        handleDispatch(cmd, "quick_button");
+      });
+    });
+
+    modelTarget.addEventListener("change", updateModelPreview);
+    modelPreset.addEventListener("change", updateModelPreview);
+    modelCustom.addEventListener("input", updateModelPreview);
+
+    applyModelBtn.addEventListener("click", function () {
+      var cmd = buildModelCommand(modelTarget.value, modelPreset.value, modelCustom.value);
+      if (!cmd) {
+        setStatus("Choose or enter a model ID.");
+        return;
+      }
+      handleDispatch(cmd, "model_switcher");
+    });
+
+    updateModelPreview();
+    syncMainButton();
+  }
+
+  var api = {
+    KNOWN_MODELS: KNOWN_MODELS,
+    REGISTERED_PROJECTS: REGISTERED_PROJECTS,
+    normalizeModelInput: normalizeModelInput,
+    buildModelCommand: buildModelCommand,
+    buildProjectPrompt: buildProjectPrompt,
+    formatUserDisplay: formatUserDisplay,
+    applyTelegramTheme: applyTelegramTheme,
+    createWebAppPayload: createWebAppPayload,
+    canUseSendData: canUseSendData,
+    dispatchCommand: dispatchCommand,
+    initBrowserApp: initBrowserApp
+  };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  } else {
+    root.NexusWebApp = api;
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initBrowserApp);
+      } else {
+        initBrowserApp();
+      }
+    }
+  }
+})(typeof window !== "undefined" ? window : globalThis);

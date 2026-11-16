@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>NexusDaemon — Director Mini App</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">N</span>
+        <div>
+          <h1>NexusDaemon</h1>
+          <p class="subtitle">The Director · Telegram Control Deck</p>
+        </div>
+      </div>
+      <div id="env-badge" class="badge badge-muted" aria-live="polite">Checking Telegram SDK…</div>
+    </header>
+
+    <section class="card" aria-labelledby="composer-heading">
+      <div class="card-header">
+        <h2 id="composer-heading">Dispatch Command or Prompt</h2>
+        <span id="user-label" class="hint-text">Preview mode</span>
+      </div>
+      <label class="sr-only" for="prompt-input">Prompt or command</label>
+      <textarea
+        id="prompt-input"
+        rows="3"
+        maxlength="4000"
+        placeholder="Ask Nexus to inspect status, delegate a task, or run a build…"
+      ></textarea>
+      <div class="card-actions">
+        <button id="send-prompt-btn" type="button" class="btn btn-primary">Send to Nexus</button>
+        <button id="copy-prompt-btn" type="button" class="btn btn-secondary">Copy</button>
+        <button id="clear-input-btn" type="button" class="btn btn-ghost">Reset</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="quick-commands-heading">
+      <div class="card-header">
+        <h2 id="quick-commands-heading">Director Slash Commands</h2>
+      </div>
+      <div class="command-grid">
+        <button type="button" class="cmd-tile" data-command="/status">
+          <span class="cmd-name">/status</span>
+          <span class="cmd-desc">Workers, builds &amp; Git</span>
+        </button>
+        <button type="button" class="cmd-tile" data-command="/models">
+          <span class="cmd-name">/models</span>
+          <span class="cmd-desc">Active &amp; preset models</span>
+        </button>
+        <button type="button" class="cmd-tile" data-command="/projects">
+          <span class="cmd-name">/projects</span>
+          <span class="cmd-desc">Registered repositories</span>
+        </button>
+        <button type="button" class="cmd-tile" data-command="/clear">
+          <span class="cmd-name">/clear</span>
+          <span class="cmd-desc">Reset sliding window</span>
+        </button>
+        <button type="button" class="cmd-tile" data-command="/help">
+          <span class="cmd-name">/help</span>
+          <span class="cmd-desc">Bot command summary</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="model-heading">
+      <div class="card-header">
+        <h2 id="model-heading">Model Configuration</h2>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Target</span>
+          <select id="model-target">
+            <option value="/model">Both Router &amp; Worker (/model)</option>
+            <option value="/router-model">Router Only (/router-model)</option>
+            <option value="/worker-model">Worker Only (/worker-model)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Preset Model</span>
+          <select id="model-preset"></select>
+        </label>
+      </div>
+      <label class="field">
+        <span>Custom Model ID (overrides preset if filled)</span>
+        <input
+          id="model-custom"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="e.g. hydrogen-4 or gemini-3.1-pro-preview"
+        />
+      </label>
+      <div class="card-actions">
+        <button id="apply-model-btn" type="button" class="btn btn-primary">Apply Model</button>
+        <code id="model-preview" class="command-preview">/model hydrogen-4</code>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="projects-hitl-heading">
+      <div class="card-header">
+        <h2 id="projects-hitl-heading">Projects &amp; HITL Guardrails</h2>
+      </div>
+      <div class="pill-row" id="project-pills" aria-label="Registered projects"></div>
+      <div class="hitl-row">
+        <button type="button" class="btn btn-approve" data-command="Y">Approve HITL (Y)</button>
+        <button type="button" class="btn btn-deny" data-command="N">Deny HITL (N)</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="log-heading">
+      <div class="card-header">
+        <h2 id="log-heading">Dispatch Log</h2>
+        <span id="status-banner" class="hint-text" role="status" aria-live="polite">Ready</span>
+      </div>
+      <ul id="activity-log" class="activity-log">
+        <li class="log-empty">No commands dispatched yet.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
